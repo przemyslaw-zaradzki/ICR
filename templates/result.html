@@ -1,0 +1,19 @@
+{% extends "public_template.html" %}
+
+{% block title %}Upload image{% endblock%}
+
+{% block main %}
+
+<div class="container">
+    <div class="row">
+        <div class="col">
+            <h1>Odczytana pozycja</h1>
+            <hr>
+            <img src="{{ position }}" alt="User Image" width="500" height="500">
+            <hr>
+            <img src="{{ pict }}" alt="User Image" width="500" height="500">
+        </div>
+    </div>
+</div>
+
+{% endblock %}
