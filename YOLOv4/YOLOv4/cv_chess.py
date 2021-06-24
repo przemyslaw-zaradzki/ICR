@@ -1,9 +1,19 @@
 import cv2 as cv2
 import numpy as np
 from os import environ
+import scipy.cluster as cluster
+import scipy.spatial as spatial
+from collections import defaultdict
+from statistics import mean
+import math
 import chess
 import chess.svg
-from Model import transforms_array, get_prediction
+from svglib.svglib import svg2rlg
+from reportlab.graphics import renderPM
+import sys
+from os import listdir
+from os.path import isfile, join
+from models import Yolo_predict
 
 def suppress_qt_warnings():
     environ["QT_DEVICE_PIXEL_RATIO"] = "0"
@@ -96,10 +106,18 @@ def fen_to_image(fen):
     board = chess.Board(fen)
     current_board = chess.svg.board(board=board)
 
-    output_file = open('static\images\current_board.svg', "w")
+    output_file = open('current_board.svg', "w")
     output_file.write(current_board)
     output_file.close()
+
+    svg = svg2rlg('current_board.svg')
+    renderPM.drawToFile(svg, 'current_board.png', fmt="PNG")
     return board
+
+# Resize the frame by scale by dimensions
+def rescale_frame(frame, percent=75):
+    dim = (1000, 750)
+    return cv2.resize(frame, dim, interpolation=cv2.INTER_AREA)
 
 def cornerDetector(img):
     kernel = np.ones((20,20), np.uint8)
@@ -119,35 +137,137 @@ def select_lines(h_lines, v_lines, h_lines_corners, v_lines_corners):
         v_lines_corners = np.delete(v_lines_corners, np.argmin(v_lines_corners), 0)
     return h_lines, v_lines
 
-def processing(path):
-    img, gray_blur = read_img("static\images\chessboard.jpg")
-    img_clear, gray_blur = read_img("static\images\chessboard.jpg")
+if __name__ == "__main__":
+
+    suppress_qt_warnings()
+
+    board_path = r"C:\pdf\pp\8_Semestr\Semestr VIII\ICR\Projekt\Dataset\Szachownice Chess Pieces.v23-raw.yolov4pytorch\valid"
+    if len(sys.argv) > 1:
+        n = int(sys.argv[1])
+        f = listdir(board_path)[n]
+        join(board_path, f)
+        img, gray_blur = read_img(join(board_path, f))
+        img_clear, gray_blur = read_img(join(board_path, f))
+    else:
+        image_path = "test/IMG_0170_JPG.rf.480e7164cb4727f6654402882f0ce942.jpg"
+        img, gray_blur = read_img(image_path)
+        img_clear, gray_blur = read_img(image_path)
+
+    cv2.imshow('gray_blur', gray_blur)
+
+    # Canny algorithm
     edges = canny_edge(gray_blur)
+    cv2.imshow('edges', edges)
+    
+    # Hough Transform
     lines = hough_line(edges)
+    
+    for line in lines:
+        rho, theta = line[0]
+        a = np.cos(theta)
+        b = np.sin(theta)
+        x0 = a * rho
+        y0 = b * rho
+
+        x1 = int(x0 + 1000 * (-b))
+        y1 = int(y0 + 1000 * (a))
+        x2 = int(x0 - 1000 * (-b))
+        y2 = int(y0 - 1000 * (a))
+
+        cv2.line(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
     lines = np.reshape(lines, (-1, 2))
+
+    # Separate the lines into vertical and horizontal lines
     h_lines, v_lines = h_v_lines(lines)
+
     corners = cornerDetector(gray_blur)
+
+    # Find and cluster the intersecting
     intersection_points, h_lines_corners, v_lines_corners, points_not_recognized, points_recognized = line_intersections(h_lines, v_lines, corners)
+    for point in points_recognized:
+        cv2.circle(corners, (int(point[0]), int(point[1])), 4, (255, 255, 0), 4)
+            
+    cv2.imshow('corners', corners)
+
     h_lines, v_lines = select_lines(h_lines, v_lines, h_lines_corners, v_lines_corners)
+
+    for line in h_lines:
+        rho = line[0]
+        theta = line[1]
+        a = np.cos(theta)
+        b = np.sin(theta)
+        x0 = a * rho
+        y0 = b * rho
+
+        x1 = int(x0 + 1000 * (-b))
+        y1 = int(y0 + 1000 * (a))
+        x2 = int(x0 - 1000 * (-b))
+        y2 = int(y0 - 1000 * (a))
+
+        cv2.line(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+    for line in v_lines:
+        rho = line[0]
+        theta = line[1]
+        a = np.cos(theta)
+        b = np.sin(theta)
+        x0 = a * rho
+        y0 = b * rho
+
+        x1 = int(x0 + 1000 * (-b))
+        y1 = int(y0 + 1000 * (a))
+        x2 = int(x0 - 1000 * (-b))
+        y2 = int(y0 - 1000 * (a))
+
+        cv2.line(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+ 
+    intersection_points, h_lines_corners, v_lines_corners, points_not_recognized, points_recognized = line_intersections(h_lines, v_lines, corners)
+    # Locate points of the documents or object which you want to transform
     board_corners, h_lines_corners, v_lines_corners, points_not_recognized, points_recognized = line_intersections(
         [ h_lines[0], h_lines[-1] ], [ v_lines[0], v_lines[-1] ], corners)
-    pts1 = np.float32([board_corners[0], board_corners[2], board_corners[3], board_corners[1] ])
-    pts2 = np.float32([[200, 200], [200, 600], [600, 600], [600, 200]])
-    matrix = cv2.getPerspectiveTransform(pts1, pts2)
-    result = cv2.warpPerspective(img_clear, matrix, (img.shape[1], img.shape[0]), flags=cv2.INTER_LINEAR)
 
-    class_names = ['b', 'k', 'n', 'p', 'q', 'r', '_', 
+    pts1 = np.float32([board_corners[0], board_corners[2], board_corners[3], board_corners[1] ])
+    squares_cotners = []
+
+    board_width = board_corners[3][1] - board_corners[0][0]
+
+    figures_on_the_board = [
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0]
+    ]
+
+    class_names = ['_', 'b', 'k', 'n', 'p', 'q', 'r', 
     'B', 'K', 'N', 'P', 'Q', 'R']
-    figures_on_the_board = []
-    for i in range(8):
-        chessboard_row = []
-        for j in range(8):
-            crop_img = result[150+50*i:250+50*i, 200+50*j:250+50*j]
-            tensor = transforms_array(crop_img)
-            prediction = get_prediction(tensor)
-            chessboard_row.append(int(prediction))
-        figures_on_the_board.append(chessboard_row)
-    
+
+    boxes = Yolo_predict()
+    for i in range(len(boxes)):
+        box = boxes[i]
+        x1 = int((box[0] - box[2] / 2.0) * img.shape[0])
+        y1 = int((box[1] - box[3] / 2.0) * img.shape[1])
+        x2 = int((box[0] + box[2] / 2.0) * img.shape[0])
+        y2 = int((box[1] + box[3] / 2.0) * img.shape[1])
+        
+        distance = 9999
+        closest_point = 0
+        for j in range(len(intersection_points)):
+            d = math.pow(intersection_points[j][0] - x1, 2) + math.pow(intersection_points[j][1] - y2, 2)
+            if d<=distance:
+                distance = d
+                closest_point = j
+        row = closest_point//9 - 1
+        column = closest_point%9
+        
+        figures_on_the_board[row][column] = int(box[6])
+        cv2.circle(img, (int(x1), y2), 4, (255, 0, 255), 4)
+    cv2.imshow('lines', img)
+
     PGN_Postion = ""
     for i in range(8):
         chessboard_row = ""
@@ -169,6 +289,11 @@ def processing(path):
         print(chessboard_row)
     PGN_Postion = PGN_Postion[0:len(PGN_Postion)-1]
     print(PGN_Postion)
+    cv2.imshow('live', img)
+    
     fen_to_image(PGN_Postion)
+    board_png = cv2.imread("current_board.png", 1)
+    cv2.imshow('FEN', board_png)  
 
-    return True
+    k = cv2.waitKey(0)
+    cv2.destroyAllWindows()

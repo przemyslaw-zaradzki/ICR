@@ -1,9 +1,11 @@
 import cv2 as cv2
 import numpy as np
 from os import environ
+import math
 import chess
 import chess.svg
-from Model import transforms_array, get_prediction
+from reportlab.graphics import renderPM
+from YOLOv4.YOLOv4.models import Yolo_predict
 
 def suppress_qt_warnings():
     environ["QT_DEVICE_PIXEL_RATIO"] = "0"
@@ -36,6 +38,7 @@ def canny_edge(img, sigma=0.33, delta=-50.0):
 # Hough line detection
 def hough_line(edges, min_line_length=100, max_line_gap=10):
     lines = cv2.HoughLines(edges, 1, np.pi / 180, 125, min_line_length, max_line_gap)
+
     return lines
 
 # Separate line into horizontal and vertical
@@ -105,7 +108,7 @@ def cornerDetector(img):
     kernel = np.ones((20,20), np.uint8)
     gray = np.float32(img)
     dst = cv2.cornerHarris(gray, 10, 3, 0.19)
-    dst = cv2.dilate(dst, kernel)
+    dst = cv2.dilate(dst, kernel) 
     blank_image = np.zeros((img.shape[0],img.shape[1],3), np.uint8)
     blank_image[dst > 0.01 * dst.max()] = [255, 0, 0]
     return blank_image
@@ -119,34 +122,48 @@ def select_lines(h_lines, v_lines, h_lines_corners, v_lines_corners):
         v_lines_corners = np.delete(v_lines_corners, np.argmin(v_lines_corners), 0)
     return h_lines, v_lines
 
-def processing(path):
+def processing_yolo(path):
+
     img, gray_blur = read_img("static\images\chessboard.jpg")
-    img_clear, gray_blur = read_img("static\images\chessboard.jpg")
     edges = canny_edge(gray_blur)
     lines = hough_line(edges)
     lines = np.reshape(lines, (-1, 2))
     h_lines, v_lines = h_v_lines(lines)
     corners = cornerDetector(gray_blur)
     intersection_points, h_lines_corners, v_lines_corners, points_not_recognized, points_recognized = line_intersections(h_lines, v_lines, corners)
+    
     h_lines, v_lines = select_lines(h_lines, v_lines, h_lines_corners, v_lines_corners)
-    board_corners, h_lines_corners, v_lines_corners, points_not_recognized, points_recognized = line_intersections(
-        [ h_lines[0], h_lines[-1] ], [ v_lines[0], v_lines[-1] ], corners)
-    pts1 = np.float32([board_corners[0], board_corners[2], board_corners[3], board_corners[1] ])
-    pts2 = np.float32([[200, 200], [200, 600], [600, 600], [600, 200]])
-    matrix = cv2.getPerspectiveTransform(pts1, pts2)
-    result = cv2.warpPerspective(img_clear, matrix, (img.shape[1], img.shape[0]), flags=cv2.INTER_LINEAR)
 
-    class_names = ['b', 'k', 'n', 'p', 'q', 'r', '_', 
+    class_names = ['_', 'b', 'k', 'n', 'p', 'q', 'r', 
     'B', 'K', 'N', 'P', 'Q', 'R']
-    figures_on_the_board = []
-    for i in range(8):
-        chessboard_row = []
-        for j in range(8):
-            crop_img = result[150+50*i:250+50*i, 200+50*j:250+50*j]
-            tensor = transforms_array(crop_img)
-            prediction = get_prediction(tensor)
-            chessboard_row.append(int(prediction))
-        figures_on_the_board.append(chessboard_row)
+    
+    figures_on_the_board = [
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0]
+    ]    
+    
+    boxes = Yolo_predict()
+    for i in range(len(boxes)):
+        box = boxes[i]
+        x1 = int((box[0] - box[2] / 2.0) * img.shape[1])
+        y2 = int((box[1] + box[3] / 2.0) * img.shape[0])
+        
+        distance = 9999
+        closest_point = 0
+        for j in range(len(intersection_points)):
+            d = math.pow(intersection_points[j][0] - x1, 2) + math.pow(intersection_points[j][1] - y2, 2)
+            if d<=distance:
+                distance = d
+                closest_point = j
+        row = closest_point//9 - 1
+        column = closest_point%9
+        figures_on_the_board[row][column] = int(box[6])
     
     PGN_Postion = ""
     for i in range(8):
